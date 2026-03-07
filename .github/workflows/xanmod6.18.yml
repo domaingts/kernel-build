@@ -10,8 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: debian:bookworm
 
     env:
       DEB_BUILD_OPTIONS: nocheck
