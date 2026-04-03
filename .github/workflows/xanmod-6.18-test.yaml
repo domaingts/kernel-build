@@ -23,6 +23,7 @@ jobs:
     env:
       DEBIAN_FRONTEND: noninteractive
       DEB_BUILD_OPTIONS: nocheck
+      KDEB_CHANGELOG_DIST: trixie
       KERNEL_LOCALVERSION: -cloud
       XANMOD_REF: 6.18
 
@@ -46,8 +47,10 @@ jobs:
           apt-get install -y --no-install-recommends \
             bc bison build-essential ca-certificates clang cpio debhelper devscripts dpkg-dev \
             fakeroot flex git initramfs-tools libdw-dev libelf-dev libncurses-dev \
+            llvm \
             libssl-dev lld pahole perl pkg-config rsync wget xz-utils zstd
           clang --version
+          llvm-ar --version
           ld.lld --version
           apt-get clean
           rm -rf /var/lib/apt/lists/*
