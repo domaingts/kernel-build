@@ -81,12 +81,24 @@ jobs:
       - name: Build Debian packages
         run: |
           set -euxo pipefail
+          mkdir -p artifacts
           make -C kernel -j"$(nproc)" \
             LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
             KDEB_COMPRESS=xz \
             LOCALVERSION="${KERNEL_LOCALVERSION}" \
             KCFLAGS="-Wno-error" \
-            bindeb-pkg
+            V=1 \
+            bindeb-pkg 2>&1 | tee artifacts/bindeb-pkg.log
+          status=${PIPESTATUS[0]}
+          if [[ ${status} -ne 0 ]]; then
+            echo "::group::Last 200 lines of bindeb-pkg.log"
+            tail -n 200 artifacts/bindeb-pkg.log || true
+            echo "::endgroup::"
+            echo "::group::Filtered error lines"
+            grep -nE 'error:|fatal:|undefined reference|No rule to make target|Error [0-9]+' artifacts/bindeb-pkg.log | head -n 100 || true
+            echo "::endgroup::"
+            exit "${status}"
+          fi
 
       - name: Collect packages
         run: |
@@ -97,11 +109,12 @@ jobs:
             -exec mv -t artifacts {} +
           ls -lh artifacts
 
-      - name: Upload workflow artifacts
+      - name: Upload build artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: xanmod-cloud-6.18-trixie-${{ github.run_id }}
-          path: artifacts/*
+          path: artifacts/
           if-no-files-found: error
           retention-days: 14
 
