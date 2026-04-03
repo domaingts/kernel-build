@@ -1,0 +1,116 @@
+name: Kernel Build - XanMod 6.18 (Debian Trixie)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xanmod-6.18-trixie-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
+    timeout-minutes: 180
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      DEB_BUILD_OPTIONS: nocheck
+      KERNEL_LOCALVERSION: -cloud
+      XANMOD_REF: 6.18
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show container info
+        run: |
+          set -euxo pipefail
+          cat /etc/os-release
+          echo "CPU cores: $(nproc)"
+          free -h
+          df -h
+          uname -a
+
+      - name: Install Debian Trixie build dependencies
+        run: |
+          set -euxo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates clang cpio debhelper devscripts dpkg-dev \
+            fakeroot flex git initramfs-tools libdw-dev libelf-dev libncurses-dev \
+            libssl-dev lld pahole perl pkg-config rsync wget xz-utils zstd
+          clang --version
+          ld.lld --version
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Download XanMod kernel
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --branch "${XANMOD_REF}" https://gitlab.com/xanmod/linux.git kernel
+
+      - name: Prepare kernel config
+        run: |
+          set -euxo pipefail
+          cp kernel/CONFIGS/x86_64/config kernel/.config
+          if [[ -f config.sh ]]; then
+            install -m 0755 config.sh kernel/config.sh
+            (
+              cd kernel
+              ./config.sh
+            )
+          else
+            echo "config.sh not found in repository; using XanMod default x86_64 config."
+          fi
+          make -C kernel LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld olddefconfig
+
+      - name: Export final config
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          cp kernel/.config "artifacts/config-6.18-clang-${{ github.run_id }}"
+
+      - name: Build Debian packages
+        run: |
+          set -euxo pipefail
+          make -C kernel -j"$(nproc)" \
+            LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
+            KDEB_COMPRESS=xz \
+            LOCALVERSION="${KERNEL_LOCALVERSION}" \
+            KCFLAGS="-Wno-error" \
+            bindeb-pkg
+
+      - name: Collect packages
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          find . -maxdepth 1 -type f \
+            \( -name 'linux-image-*.deb' -o -name 'linux-headers-*.deb' -o -name 'linux-libc-dev_*.deb' \) \
+            -exec mv -t artifacts {} +
+          ls -lh artifacts
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: xanmod-cloud-6.18-trixie-${{ github.run_id }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: xanmod-cloud-6.18-trixie-${{ github.run_id }}
+          name: XanMod Cloud Kernel 6.18 (Debian Trixie)
+          files: artifacts/*
+          overwrite_files: true
