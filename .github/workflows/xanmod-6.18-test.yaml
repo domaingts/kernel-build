@@ -35,7 +35,7 @@ jobs:
           set -euxo pipefail
           cat /etc/os-release
           echo "CPU cores: $(nproc)"
-          free -h
+          awk '/MemTotal|MemAvailable|SwapTotal|SwapFree/ { print }' /proc/meminfo
           df -h
           uname -a
 
