@@ -33,7 +33,7 @@ jobs:
 
       - name: Show container info
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cat /etc/os-release
           echo "CPU cores: $(nproc)"
           awk '/MemTotal|MemAvailable|SwapTotal|SwapFree/ { print }' /proc/meminfo
@@ -42,9 +42,9 @@ jobs:
 
       - name: Install Debian Trixie build dependencies
         run: |
-          set -euxo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -yqq --no-install-recommends \
             bc bison build-essential ca-certificates clang cpio debhelper devscripts dpkg-dev \
             fakeroot flex git initramfs-tools libdw-dev libelf-dev libncurses-dev \
             llvm \
@@ -57,12 +57,12 @@ jobs:
 
       - name: Download XanMod kernel
         run: |
-          set -euxo pipefail
-          git clone --depth=1 --branch "${XANMOD_REF}" https://gitlab.com/xanmod/linux.git kernel
+          set -euo pipefail
+          git clone --quiet --depth=1 --branch "${XANMOD_REF}" https://gitlab.com/xanmod/linux.git kernel
 
       - name: Prepare kernel config
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           cp kernel/CONFIGS/x86_64/config kernel/.config
           if [[ -f config.sh ]]; then
             install -m 0755 config.sh kernel/config.sh
@@ -73,42 +73,46 @@ jobs:
           else
             echo "config.sh not found in repository; using XanMod default x86_64 config."
           fi
-          make -C kernel LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld olddefconfig
+          make -C kernel LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld KBUILD_VERBOSE=0 olddefconfig
 
       - name: Export final config
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           mkdir -p artifacts
           cp kernel/.config "artifacts/config-6.18-clang-${{ github.run_id }}"
 
       - name: Build Debian packages
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           mkdir -p artifacts
-          make -C kernel -j"$(nproc)" \
+          build_log=bindeb-pkg.log
+          if ! make -C kernel -j"$(nproc)" \
             LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
             KDEB_COMPRESS=xz \
             LOCALVERSION="${KERNEL_LOCALVERSION}" \
+            KBUILD_VERBOSE=0 \
+            V=0 \
             KCFLAGS="-Wno-error" \
-            V=1 \
-            bindeb-pkg 2>&1 | tee artifacts/bindeb-pkg.log
-          status=${PIPESTATUS[0]}
-          if [[ ${status} -ne 0 ]]; then
-            echo "::group::Last 200 lines of bindeb-pkg.log"
-            tail -n 200 artifacts/bindeb-pkg.log || true
-            echo "::endgroup::"
+            bindeb-pkg > "${build_log}" 2>&1; then
+            cp "${build_log}" artifacts/bindeb-pkg.log
             echo "::group::Filtered error lines"
-            grep -nE 'error:|fatal:|undefined reference|No rule to make target|Error [0-9]+' artifacts/bindeb-pkg.log | head -n 100 || true
+            if ! grep -nE 'error:|fatal:|undefined reference|No rule to make target|Error [0-9]+' "${build_log}" | head -n 100; then
+              echo "No filtered error lines matched. Showing last 60 log lines instead."
+              tail -n 60 "${build_log}" || true
+            fi
             echo "::endgroup::"
-            exit "${status}"
+            echo "Full build log saved to artifacts/bindeb-pkg.log"
+            exit 1
           fi
+          rm -f "${build_log}"
+          echo "bindeb-pkg completed successfully"
 
       - name: Collect packages
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           mkdir -p artifacts
           find . -maxdepth 1 -type f \
-            \( -name 'linux-image-*.deb' -o -name 'linux-headers-*.deb' -o -name 'linux-libc-dev_*.deb' \) \
+            \( -name 'linux-image-*.deb' -o -name 'linux-headers-*.deb' \) \
             -exec mv -t artifacts {} +
           ls -lh artifacts
 
