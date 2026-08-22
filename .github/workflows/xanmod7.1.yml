@@ -2,14 +2,20 @@
 
 name: Kernel Build - Xanmod 7.1
 
-# Controls when the workflow will run
-
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xanmod-7.1-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
 
     env:
       DEB_BUILD_OPTIONS: nocheck
@@ -72,61 +78,78 @@ jobs:
         run: |
           git clone --depth=1 --branch 7.1 https://gitlab.com/xanmod/linux.git kernel
 
-
       - name: 从仓库更新 config 配置
-        run:  |
+        run: |
+          set -euo pipefail
           cd kernel
           cp ../config.sh .
           chmod +x config.sh
           cp CONFIGS/x86_64/config .config
           ./config.sh
+          # 7.1 vDSO 不再从 32 位目标里去掉 64 位 -march，直接关掉 IA32 vDSO。
+          scripts/config --disable CONFIG_IA32_EMULATION
+          scripts/config --disable CONFIG_X86_X32_ABI
+          scripts/config --disable CONFIG_COMPAT_32 || true
+          scripts/config --disable CONFIG_COMPAT || true
           make LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld olddefconfig
+          echo "::group::compat options after olddefconfig"
+          grep -E 'CONFIG_(IA32_EMULATION|X86_X32_ABI|COMPAT_32|COMPAT)[= ]' .config || true
+          echo "::endgroup::"
+          if grep -qE '^CONFIG_(IA32_EMULATION|COMPAT_32|X86_X32_ABI)=y' .config; then
+            echo "::error::32-bit compat still enabled; Clang vdso32 will fail"
+            exit 1
+          fi
 
-          
       - name: 导出最终内核配置 .config
         run: |
           mkdir -p artifacts
           cp kernel/.config artifacts/config-7.1-clang-${{ github.run_id }}
 
-      - name: 构建 kernel vmlinux
-        run: |
-          cd kernel
-          make -j$(nproc) \
-            LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
-            vmlinux modules_prepare \
-            KCFLAGS="-march=x86-64-v3 -O3 -ffunction-sections -fdata-sections -mllvm -enable-machine-outliner -Wno-error"
-
-      - name: 构建内核模块 kernel modules_prepare
-        run: |
-          cd kernel
-          make -j$(nproc) \
-            LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
-            modules_prepare \
-            KCFLAGS="-march=x86-64-v3 -O3 -ffunction-sections -fdata-sections -mllvm -enable-machine-outliner -Wno-error"
-
       - name: 构建内核软件包 kernel deb packages
         run: |
-          cd kernel
-          KDEB_COMPRESS=xz \
-          make -j$(nproc) \
+          set -euo pipefail
+          mkdir -p artifacts
+          build_log=bindeb-pkg.log
+          if ! make -C kernel -j"$(nproc)" \
             LLVM=1 LLVM_IAS=1 CC=clang LD=ld.lld \
-            bindeb-pkg \
-            LOCALVERSION=${KERNEL_LOCALVERSION} \
-            KCFLAGS="-march=x86-64-v3 -O3 -ffunction-sections -fdata-sections -mllvm -enable-machine-outliner -Wno-error"
+            KDEB_COMPRESS=xz \
+            LOCALVERSION="${KERNEL_LOCALVERSION}" \
+            KCFLAGS="-O3 -Wno-error" \
+            bindeb-pkg > "${build_log}" 2>&1; then
+            cp "${build_log}" artifacts/bindeb-pkg.log
+            echo "::group::Filtered error lines"
+            if ! grep -nE 'error:|fatal:|undefined reference|No rule to make target|Error [0-9]+' "${build_log}" | head -n 100; then
+              echo "No filtered error lines matched. Showing last 80 log lines instead."
+              tail -n 80 "${build_log}" || true
+            fi
+            echo "::endgroup::"
+            echo "Full build log saved to artifacts/bindeb-pkg.log"
+            exit 1
+          fi
+          rm -f "${build_log}"
+          echo "bindeb-pkg completed successfully"
 
-      - name: 查看文件目录
-        run: |
-          cd kernel
-          ls -al
-          
       - name: 归档文件 kernel artifacts
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          mv linux-image-*.deb artifacts/
-          mv linux-headers-*.deb artifacts/
+          find . -maxdepth 1 -type f \
+            \( -name 'linux-image-*.deb' -o -name 'linux-headers-*.deb' \) \
+            -exec mv -t artifacts {} +
+          ls -lh artifacts
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xanmod-cloud-7.1-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: 发布
-        uses: softprops/action-gh-release@master
+        if: success()
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -134,20 +157,3 @@ jobs:
           name: XanMod Cloud 内核 v3
           files: artifacts/*
           overwrite_files: true
-
-      # - name: 删除以往工作流
-      #   if: always()
-      #   uses: Mattraks/delete-workflow-runs@main
-      #   with:
-      #     retain_days: 30
-      #     keep_minimum_runs: 5
-
-      # - name: 删除旧的发布文件
-      #   if: always()
-      #   uses: dev-drprasad/delete-older-releases@master
-      #   with:
-      #     keep_latest: 5
-      #     delete_tags: true
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

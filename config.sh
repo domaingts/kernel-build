@@ -3,6 +3,12 @@ set -e
 # 批量修改
 scripts/config --enable CONFIG_GENERIC_CPU
 scripts/config --set-val CONFIG_X86_64_VERSION 3
+# cloud x86-64-v3 不需要 32 位用户态。7.1 的 vdso32 会继承 -march=x86-64-v3，
+# Clang 编译 vclock_gettime.o 时报 expected relocatable expression。
+scripts/config --disable CONFIG_IA32_EMULATION
+scripts/config --disable CONFIG_X86_X32_ABI
+scripts/config --disable CONFIG_COMPAT_32 || true
+scripts/config --disable CONFIG_COMPAT || true
 scripts/config --disable CONFIG_USELIB
 scripts/config --disable CONFIG_AUDIT
 scripts/config --disable CONFIG_AUDITSYSCALL
